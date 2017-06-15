@@ -5,7 +5,8 @@
 //char version[]="meshgeometry, version 5, roberto toro, 28 May 2012";    // added several commands: foldLength, volume, absgi, texture threshold, countClusters, and includes meshconvert v8
 //char version[]="meshgeometry, version 6, roberto toro, 10 November 2012"; // added randomverts, help, centre, normalise, normal, verbose, off mesh format (load and save), added to github
 //char version[]="meshgeometry, version 7, roberto toro, 17 Decembre 2014"; // vtk support
-char version[]="meshgeometry, version 8, roberto toro, 26 Decembre 2015";
+//char version[]="meshgeometry, version 8, roberto toro, 26 Decembre 2015";
+char version[]="meshgeometry, version 9, roberto toro, 10 June 2017"; // add gii reader
 
 /*
     To use:
@@ -30,6 +31,7 @@ char version[]="meshgeometry, version 8, roberto toro, 26 Decembre 2015";
 #include <math.h>
 #include <time.h>
 #include <unistd.h>
+#include <zlib.h>
 
 // OpenGL libraries
 #ifdef __APPLE__
@@ -65,6 +67,7 @@ char version[]="meshgeometry, version 8, roberto toro, 26 Decembre 2015";
 #define kVTKMesh            17
 #define kDPVData            18
 #define kCivetObjMesh       19
+#define kGiiMesh            20
 
 typedef struct
 {
@@ -155,6 +158,23 @@ float determinant(float3D a, float3D b, float3D c)
                 a.z*(b.x*c.y-c.x*b.y);
     return D;
 }
+
+int multMatVec(float *m, float3D v, float3D *result)
+{
+    /*
+    Multiplies the vector v by the 4x4 matrix m, and puts the result into result
+    */
+    float3D r;
+    r.x= m[0]*v.x +m[1]*v.y +m[2]*v.z+m[3];
+    r.y= m[4]*v.x +m[5]*v.y +m[6]*v.z+m[7];
+    r.z= m[8]*v.x +m[9]*v.y +m[10]*v.z+m[11];
+    result->x=r.x;
+    result->y=r.y;
+    result->z=r.z;
+    
+    return 0;
+}
+
 
 #pragma mark -
 #pragma mark [ Utilities ]
@@ -452,8 +472,8 @@ int getformatindex(char *path)
                         "sulc",     "reg",   "txt1",  "wrl",     "obj",
                         "ply",      "stl",   "smesh", "off",     "bin",
                         "mgh",      "annot", "raw",   "vtk",     "dpv",
-                        "civet_obj"};
-    int     i,n=26; // number of recognised formats
+                        "civet_obj","gii"};
+    int     i,n=sizeof(formats)/sizeof(long); // number of recognised formats
     int     found,index;
     char    *extension;
     
@@ -606,6 +626,13 @@ int getformatindex(char *path)
         index=kCivetObjMesh;
         if(verbose)
             printf("Format: Civet Obj Mesh\n");
+    }
+    else
+    if(i==26)
+    {
+        index=kGiiMesh;
+        if(verbose)
+            printf("Format: Gii Mesh\n");
     }
         
     return index;
@@ -2028,6 +2055,81 @@ int DPV_load_data(char *path, Mesh *m)
     
     return 0;
 }
+void read_giiElement(char *path, char *el, char **data, int *n)
+{
+    FILE        *f;
+    long        sz,expsz;
+    char        *gzdata;
+    z_stream    strm;
+    char        str[256],cmd[2048];
+    
+    // Read number of values
+    sprintf(cmd,"awk 'BEGIN{s=0}/%s/{s=1}/Dim0/{if(s==1){split($0,a,\"\\\"\");n=a[2];s=0}}END{print n}' %s",el,path);    
+    f=popen(cmd,"r");
+    fgets(str,256,f);
+    sscanf(str," %i ",n);
+    pclose(f);
+    printf("n: %i\n",*n);
+    
+    // Calculate length of gzip compressed data
+    sprintf(cmd,"awk 'BEGIN{s=0}/%s/{s=1}/<Data>/{if(s==1){split($0,a,\"[<>]\");d=a[3];s=0}}END{print d}' %s|base64 --decode",el,path);
+    f=popen(cmd,"r");
+    sz=0;
+    while(!feof(f))
+    {
+        fread(str,256,sizeof(char),f);
+        sz+=256;
+    }
+    pclose(f);
+    
+    // Allocate memory for gzip data
+    gzdata=(char*)calloc(sz,sizeof(char));
+    
+    // Read gzip data
+    f=popen(cmd,"r");
+    sz=0;
+    while(!feof(f))
+    {
+        fread(gzdata+sz,256,sizeof(char),f);
+        sz+=256;
+    }
+    pclose(f);
+    
+    // Inflate gzip data
+    expsz=(*n)*3*4; // because 3: 3d data, 4: float or int 4 byte values
+    *data=calloc(expsz,sizeof(char));
+    strm.zalloc = Z_NULL;
+    strm.zfree = Z_NULL;
+    strm.opaque = Z_NULL;
+    strm.avail_in = (uInt)sz; // size of input
+    strm.next_in = (Bytef *)gzdata; // input char array
+    strm.avail_out = (uInt)expsz; // size of output
+    strm.next_out = (Bytef *)(*data); // output char array
+    inflateInit(&strm);
+    inflate(&strm, Z_NO_FLUSH);
+    inflateEnd(&strm);
+
+    // Free memory
+    free(gzdata);
+}
+int Gii_load(char *path, Mesh *m)
+{
+    int     *np=&(m->np);
+    int     *nt=&(m->nt);
+    float3D **p=&(m->p);
+    int3D   **t=&(m->t);
+
+    read_giiElement(path,"NIFTI_INTENT_POINTSET",(char**)p,np);
+    read_giiElement(path,"NIFTI_INTENT_TRIANGLE",(char**)t,nt);
+    if(verbose)
+    {
+        printf("Read %i vertices\n",*np);
+        printf("Read %i triangles\n",*nt);
+    }
+    
+    return 0;    
+}
+
 
 #pragma mark -
 void printVertex(float3D p)
@@ -2120,6 +2222,9 @@ int loadMesh(char *path, Mesh *m,int iformat)
             break;
         case kCivetObjMesh:
             err=CivetObj_load_mesh(path,m);
+            break;
+        case kGiiMesh:
+            err=Gii_load(path,m);
             break;
         default:
             printf("ERROR: Input mesh format not recognised\n");
@@ -2622,6 +2727,19 @@ int average(int N, char *paths[], Mesh *m)
     for(i=0;i<np;i++)
         p[i]=sca3D(p[i],1/(float)N);
 
+    return 0;
+}
+int applyMatrix(float *M, Mesh *m)
+{
+    /*
+    Multiply all mesh vertices by the 4x4 matrix m
+    */
+    int i;
+    for(i=0;i<m->np;i++)
+    {
+        multMatVec(M,m->p[i],&(m->p[i]));
+    }
+    
     return 0;
 }
 int barycentricProjection(char *path_rm, Mesh *m)
@@ -3146,11 +3264,11 @@ int drawSurface(Mesh *m,char *cmap,char *tiff_path)
     
     if(strcmp(cmap,"level2")==0)
     for(i=0;i<width*height*4;i++)
-        addr[i]=(addr[i]%128>=120 && addr[i]%128<128)?0:255;
+        addr[i]=(char)((addr[i]%128>=120 && addr[i]%128<128)?0:255);
 
     if(strcmp(cmap,"level4")==0)
     for(i=0;i<width*height*4;i++)
-        addr[i]=(addr[i]%64>=60 && addr[i]%64<64)?0:255;
+        addr[i]=(char)((addr[i]%64>=60 && addr[i]%64<64)?0:255);
 
 	writeTIFF(tiff_path,addr,width,height);
 	
@@ -3597,6 +3715,82 @@ int removeIsolatedVerts(Mesh *m)
         {
             ip[i]=j;    // lookup table
             p[j]=p[i];  // re-indexed vertices
+            j++;
+        }
+        else
+            ip[i]=-1;   // this doesn't really matter (it'll never be read)
+    }
+    np0=*np;
+    *np=j;  // j is the new number of vertices
+    
+    // re-index triangles
+    for(i=0;i<*nt;i++)
+        t[i]=(int3D){ip[t[i].a],ip[t[i].b],ip[t[i].c]};
+    free(n);
+    
+    if(verbose)
+        printf("%i vertices were removed\n",np0-j);
+    
+    return 0;
+}
+int removeVerts(Mesh *m)
+{
+    if(verbose)
+        printf("* removeVerts\n");
+
+    int     np0,*np=&(m->np);
+    int     *nt=&(m->nt);
+    float3D *p=m->p;
+    int3D   *t=m->t;
+    int     *n,*ip;
+    int     i,j,sum;
+    float   *data=m->data;
+    
+    if(data==NULL)
+    {
+        printf("ERROR: there is no data to removeVerts (use -curv, for example)\n");
+        return 1;
+    }
+    
+    // remove triangles that contain vertices with negative data values,
+    // vertices with negative data will be then isolated
+    sum=0;
+    for(i=0;i<*nt;i++)
+    {
+        if(data[t[i].a]<0 || data[t[i].b]<0 || data[t[i].c]<0)
+        {
+            (*nt)--;
+            for(j=i;j<*nt;j++)
+                t[j]=t[j+1];
+            sum++;
+            i--;
+        }
+    }
+    if(verbose)
+        printf("%i triangles with negative data vertices removed\n",sum);
+    
+    // remove isolated vertices
+    ip=(int*)calloc(*np,sizeof(int));
+    n=(int*)calloc(*np,sizeof(int));
+    
+    // count neighbours
+    for(i=0;i<*nt;i++)
+    {
+        n[t[i].a]+=2;
+        n[t[i].b]+=2;
+        n[t[i].c]+=2;
+    }
+    
+    // make a lookup table for the new vertex indices
+    // and re-index the vertices
+    j=0;
+    for(i=0;i<*np;i++)
+    {
+        if(n[i]>0)
+        {
+            ip[i]=j;    // lookup table
+            p[j]=p[i];  // re-indexed vertices
+            data[j]=data[i]; // re-index data
             j++;
         }
         else
@@ -5132,7 +5326,57 @@ int resample(char *path_m1, char *path_rm, Mesh *m)
     
     return 0;
 }
-int uniform_sortVertices(const void *a, const void *b)
+
+/*
+    re-index the mesh's triangles so that they are sorted along the x axis
+*/
+int sortTrianglesFunction(const void *a, const void *b)
+{
+	float3D	v1=*(float3D*)a;
+	float3D	v2=*(float3D*)b;
+
+	if(v1.x==v2.x)
+	{
+		return 0;
+	}
+	else
+	{
+		if(v1.x<v2.x)
+			return -1;
+		else
+			return	1;
+	}
+}
+void sortTriangles(Mesh *m)
+{
+    int     nt=m->nt;
+    float3D *p=m->p;
+    int3D   *t=m->t,*t2;
+    float3D   *x;
+    int     i;
+    
+    x=(float3D*)calloc(nt,sizeof(float3D));
+    for(i=0;i<nt;i++)
+    {
+        x[i].x=(p[t[i].a].x+p[t[i].b].x+p[t[i].c].x)/3.0;
+        x[i].y=i;
+    }
+    
+    // sort vertices per cos(angle)
+    qsort(x,nt,sizeof(float3D),sortTrianglesFunction);
+    
+    t2=(int3D*)calloc(nt,sizeof(int3D));
+
+    // redistribute uniformly the triangles along the x axis
+    for(i=0;i<nt;i++)
+        t2[i]=t[(int)round(x[i].y)];
+    for(i=0;i<nt;i++)
+        t[i]=t2[i];
+
+    free(x);
+    free(t2);
+}
+int sortVerticesFunction(const void *a, const void *b)
 {
 	float3D	v1=*(float3D*)a;
 	float3D	v2=*(float3D*)b;
@@ -5152,11 +5396,11 @@ int uniform_sortVertices(const void *a, const void *b)
 void uniform(Mesh *m)
 {
     float3D *p=m->p,p0;
-    int np=m->np;
+    int     np=m->np;
     float3D *a,d,v,ma,mi,c;
-    int niter=2000,maxiter;
-    int i,j;
-    float x,s,ss,std,maxstd,r1,r2,n;
+    int     niter=2000,maxiter;
+    int     i,j;
+    float   x,s,ss,std,maxstd,r1,r2,n;
     
     mi=ma=p[0];
     for(i=0;i<np;i++)
@@ -5222,7 +5466,7 @@ void uniform(Mesh *m)
     printf("angle mean=%g, angle s.d.=%g\n",s/(float)np,std);
     
     // sort vertices per cos(angle)
-    qsort(a,np,sizeof(float3D),uniform_sortVertices);
+    qsort(a,np,sizeof(float3D),sortVerticesFunction);
 
     // redistribute uniformly the vertices along the axis d
     for(i=0;i<np;i++)
@@ -5288,7 +5532,9 @@ void printHelp(void)
     -clip min max                                    Clip data values to the interval [min,max]\n\
     -mean                                            Mean data value\n\
     -min                                             Minimum data value\n\
+    -max                                             Maximum data value\n\
     -mirror coord                                    Mirror vertices in the coordinate 'coord' relative to the mesh's barycentre\n\
+    -applyMatrix m11,m12,...,m34                     Transform the vertex coordinates by multiplying them by a 4x4 matrix (the last row is set to 0,0,0,1)\n\
     -nonmanifold                                     Detect vertices in edges with more than 2 triangles\n\
     -normal                                          Mesh normal vectors\n\
     -normalise                                       Place all vertices at distance 100 from\n\
@@ -5300,11 +5546,13 @@ void printHelp(void)
     -relax filename                                  Relax current mesh to mesh at filename\n\
                                                         (both meshes have the same topology)\n\
     -removeIsolatedVerts                             Remove isolated vertices\n\
+    -removeVerts                                     Remove vertices with negative vertex data values\n\
     -resample smooth_mesh reference_mesh             Resample the mesh to match the vertices\n\
                                                        and the topology of the argument mesh\n\
     -rotate x y z                                    Rotate with angles x, y and z in degrees\n\
     -scale scale_value                               Multiply each vertex by \"scale\"\n\
     -size                                            Display mesh dimensions\n\
+    -sortTriangles                                   Sort the triangles in the mesh file along the x axis\n\
     -stereographic                                   Stereographic projection\n\
     -subdivide                                       Subdivide the mesh using 1 iteration of Kobbelt's sqrt(3) algorithm\n\
     -tangentLaplace lambda number_of_iterations      Laplace smoothing tangential to the mesh surface\n\
@@ -5435,6 +5683,17 @@ int main(int argc, char *argv[])
             addMesh(argv[++i],&mesh,iformat);
         }
         else
+        if(strcmp(argv[i],"-applyMatrix")==0)
+        {
+            char *str=argv[++i];
+            float m[16]={0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1};
+            sscanf(str," %f,%f,%f,%f, %f,%f,%f,%f, %f,%f,%f,%f ",
+                &(m[0]),&(m[1]),&(m[2]),&(m[3]),
+                &(m[4]),&(m[5]),&(m[6]),&(m[7]),
+                &(m[8]),&(m[8]),&(m[10]),&(m[11]));
+            applyMatrix(m,&mesh);
+        }
+        else
         if(strcmp(argv[i],"-align")==0)
         {
             align(&mesh,argv[++i]);
@@ -5492,6 +5751,11 @@ int main(int argc, char *argv[])
         if(strcmp(argv[i],"-removeIsolatedVerts")==0)
         {
             removeIsolatedVerts(&mesh);
+        }
+        else
+        if(strcmp(argv[i],"-removeVerts")==0)
+        {
+            removeVerts(&mesh);
         }
         else
         if(strcmp(argv[i],"-laplaceSmooth")==0)
@@ -5580,6 +5844,11 @@ int main(int argc, char *argv[])
         if(strcmp(argv[i],"-scale")==0)
         {
             scale(atof(argv[++i]),&mesh);
+        }
+        else
+        if(strcmp(argv[i],"-sortTriangles")==0)
+        {
+            sortTriangles(&mesh);
         }
         else
         if(strcmp(argv[i],"-lissencephalic")==0)

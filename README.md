@@ -47,6 +47,7 @@ Geometry modification                            |Description
 -removeIsolatedVerts                             |Removes isolated vertices in the mesh (if present)
 -rotate x y z                                    |Rotate with angles x, y and z (in degrees)
 -scale scale_value                               |Multiply each vertex by 'scale'
+-sortTriangles                                   |Sort the triangles in the mesh file along the x axis
 -stereographic                                   |Stereographic projection
 -subdivide                                       |Subdivide the mesh with one iteration of Kobbelt's sqrt(3) algorithm
 -taubinSmooth lambda mu number_of_iterations     |Taubin Smoothing
@@ -88,4 +89,4 @@ Extension                                        |Description
 .float                                           |Raw float data
 .txt1                                            |RT's data format
 .bin                                             |n-e-r-v-o-u-s system web binary mesh
-.wrl, .obj, .ply, .stl, .smesh, .off, .vtk       |Other mesh formats
+.wrl, .obj, .ply, .stl, .smesh, .off, .vtk, .gii |Other mesh formats
